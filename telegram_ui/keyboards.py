@@ -14,7 +14,7 @@ def inquiry_keyboard(inquiry_id: str, status: InquiryStatus):
                     callback_data=f"claim:{inquiry_id}",
                 ),
                 InlineKeyboardButton(
-                    "❌ Ignore",
+                    "❌ No Deal",
                     callback_data=f"ignore:{inquiry_id}",
                 ),
             ]
@@ -26,14 +26,58 @@ def inquiry_keyboard(inquiry_id: str, status: InquiryStatus):
         keyboard = [
             [
                 InlineKeyboardButton(
-                    "✅ Claimed",
+                    "↗️ Open Group",
+                    callback_data=f"noop:{inquiry_id}",
+                ),
+            ],
+            [
+                InlineKeyboardButton(
+                    "📨 Send Quote",
+                    callback_data=f"quote:{inquiry_id}",
+                ),
+                InlineKeyboardButton(
+                    "✏️ Edit",
+                    callback_data=f"noop:{inquiry_id}",
+                ),
+            ],
+            [
+                InlineKeyboardButton(
+                    "🔒 Lock",
                     callback_data=f"noop:{inquiry_id}",
                 ),
                 InlineKeyboardButton(
-                    "❌ Ignore",
+                    "❌ No Deal",
                     callback_data=f"ignore:{inquiry_id}",
                 ),
-            ]
+            ],
+        ]
+
+        return InlineKeyboardMarkup(keyboard)
+
+    if status == InquiryStatus.QUOTE_SENT:
+        keyboard = [
+            [
+                InlineKeyboardButton(
+                    "↗️ Open Group",
+                    callback_data=f"noop:{inquiry_id}",
+                ),
+            ],
+            [
+                InlineKeyboardButton(
+                    "✏️ Edit",
+                    callback_data=f"noop:{inquiry_id}",
+                ),
+                InlineKeyboardButton(
+                    "🔒 Lock",
+                    callback_data=f"noop:{inquiry_id}",
+                ),
+            ],
+            [
+                InlineKeyboardButton(
+                    "❌ No Deal",
+                    callback_data=f"ignore:{inquiry_id}",
+                ),
+            ],
         ]
 
         return InlineKeyboardMarkup(keyboard)

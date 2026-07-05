@@ -13,7 +13,12 @@ from core.router import route_message
 from ai.parser import parse_message
 
 from inquiry.service import create_inquiry
-from inquiry.actions import claim_inquiry, ignore_inquiry
+from inquiry.actions import (
+    claim_inquiry,
+    ignore_inquiry,
+    mark_quote_sent,
+)
+from inquiry.repository import repository
 
 from telegram_ui.cards import build_inquiry_card
 from telegram_ui.keyboards import inquiry_keyboard
@@ -21,7 +26,6 @@ from telegram_ui.keyboards import inquiry_keyboard
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
-    # Ignore non-text messages
     if not update.message or not update.message.text:
         return
 
@@ -41,7 +45,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     print(f"MESSAGE : {message}")
     print("=" * 60)
 
-    # Router
     decision = route_message(message)
 
     print(f"ROUTER : {decision}")
@@ -76,18 +79,26 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     print(ticket)
     print("=============================")
 
-    await update.message.reply_text(
+    sent_message = await update.message.reply_text(
         build_inquiry_card(ticket),
         parse_mode="HTML",
-        reply_markup=inquiry_keyboard(ticket.inquiry_id, ticket.status),
+        reply_markup=inquiry_keyboard(
+            ticket.inquiry_id,
+            ticket.status,
+        ),
     )
+
+    ticket.telegram.message_id = sent_message.message_id
+
+    repository.save(ticket)
 
 
 async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     query = update.callback_query
 
-    await query.answer()
+    if query is None:
+        return
 
     data = query.data
 
@@ -111,6 +122,34 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 show_alert=True,
             )
             return
+
+        await query.answer("Claimed.")
+
+        await query.edit_message_text(
+            text=build_inquiry_card(inquiry),
+            parse_mode="HTML",
+            reply_markup=inquiry_keyboard(
+                inquiry.inquiry_id,
+                inquiry.status,
+            ),
+        )
+
+        return
+
+    if action == "quote":
+
+        inquiry = mark_quote_sent(
+            inquiry_id=inquiry_id,
+        )
+
+        if inquiry is None:
+            await query.answer(
+                "Inquiry not found.",
+                show_alert=True,
+            )
+            return
+
+        await query.answer("Quote marked as sent.")
 
         await query.edit_message_text(
             text=build_inquiry_card(inquiry),
@@ -136,6 +175,8 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return
 
+        await query.answer("No deal.")
+
         await query.edit_message_text(
             text=build_inquiry_card(inquiry),
             parse_mode="HTML",
@@ -150,7 +191,7 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if action == "noop":
 
         await query.answer(
-            "Already claimed.",
+            "This button is not wired yet.",
             show_alert=False,
         )
 
