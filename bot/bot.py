@@ -2,6 +2,7 @@ from telegram import Update
 from telegram.ext import (
     ApplicationBuilder,
     MessageHandler,
+    CallbackQueryHandler,
     ContextTypes,
     filters,
 )
@@ -12,6 +13,7 @@ from core.router import route_message
 from ai.parser import parse_message
 
 from inquiry.service import create_inquiry
+from inquiry.actions import claim_inquiry, ignore_inquiry
 
 from telegram_ui.cards import build_inquiry_card
 from telegram_ui.keyboards import inquiry_keyboard
@@ -39,7 +41,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     print(f"MESSAGE : {message}")
     print("=" * 60)
 
-    # Decide if this is an OTC inquiry
+    # Router
     decision = route_message(message)
 
     print(f"ROUTER : {decision}")
@@ -47,10 +49,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if decision != "PRICE":
         print("Ignored.")
         return
-
-    # ----------------------------
-    # Gemini Parsing
-    # ----------------------------
 
     try:
         parsed = parse_message(message)
@@ -64,14 +62,13 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     print(parsed)
     print("============================")
 
-    # ----------------------------
-    # Create Inquiry Ticket
-    # ----------------------------
-
     ticket = create_inquiry(
         customer_name=user,
         customer_group=group,
-        parsed_trade=parsed,
+        chat_id=update.effective_chat.id,
+        message_id=update.message.message_id,
+        original_message=message,
+        parsed=parsed,
     )
 
     print()
@@ -79,15 +76,85 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     print(ticket)
     print("=============================")
 
-    # ----------------------------
-    # Send Telegram Inquiry Card
-    # ----------------------------
-
     await update.message.reply_text(
         build_inquiry_card(ticket),
         parse_mode="HTML",
-        reply_markup=inquiry_keyboard(ticket.id),
+        reply_markup=inquiry_keyboard(ticket.inquiry_id, ticket.status),
     )
+
+
+async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
+    query = update.callback_query
+
+    await query.answer()
+
+    data = query.data
+
+    action, inquiry_id = data.split(":", 1)
+
+    trader = query.from_user
+    trader_id = trader.id
+    trader_name = trader.full_name
+
+    if action == "claim":
+
+        inquiry = claim_inquiry(
+            inquiry_id=inquiry_id,
+            trader_id=trader_id,
+            trader_name=trader_name,
+        )
+
+        if inquiry is None:
+            await query.answer(
+                "Inquiry not found.",
+                show_alert=True,
+            )
+            return
+
+        await query.edit_message_text(
+            text=build_inquiry_card(inquiry),
+            parse_mode="HTML",
+            reply_markup=inquiry_keyboard(
+                inquiry.inquiry_id,
+                inquiry.status,
+            ),
+        )
+
+        return
+
+    if action == "ignore":
+
+        inquiry = ignore_inquiry(
+            inquiry_id=inquiry_id,
+        )
+
+        if inquiry is None:
+            await query.answer(
+                "Inquiry not found.",
+                show_alert=True,
+            )
+            return
+
+        await query.edit_message_text(
+            text=build_inquiry_card(inquiry),
+            parse_mode="HTML",
+            reply_markup=inquiry_keyboard(
+                inquiry.inquiry_id,
+                inquiry.status,
+            ),
+        )
+
+        return
+
+    if action == "noop":
+
+        await query.answer(
+            "Already claimed.",
+            show_alert=False,
+        )
+
+        return
 
 
 def run_bot():
@@ -99,6 +166,10 @@ def run_bot():
             filters.TEXT & ~filters.COMMAND,
             handle_message,
         )
+    )
+
+    app.add_handler(
+        CallbackQueryHandler(handle_button)
     )
 
     print("🚀 OTC AI Dealer is running...")
