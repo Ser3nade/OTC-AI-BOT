@@ -1,5 +1,4 @@
 from telegram import Update
-from ai.parser import parse_message
 from telegram.ext import (
     ApplicationBuilder,
     MessageHandler,
@@ -8,12 +7,19 @@ from telegram.ext import (
 )
 
 from config import BOT_TOKEN
+
 from core.router import route_message
+from ai.parser import parse_message
+
+from inquiry.service import create_inquiry
+
+from telegram_ui.cards import build_inquiry_card
+from telegram_ui.keyboards import inquiry_keyboard
 
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
-    # Ignore messages with no text
+    # Ignore non-text messages
     if not update.message or not update.message.text:
         return
 
@@ -33,24 +39,55 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     print(f"MESSAGE : {message}")
     print("=" * 60)
 
-    # Router
+    # Decide if this is an OTC inquiry
     decision = route_message(message)
 
     print(f"ROUTER : {decision}")
 
-    if decision == "PRICE":
+    if decision != "PRICE":
+        print("Ignored.")
+        return
 
+    # ----------------------------
+    # Gemini Parsing
+    # ----------------------------
+
+    try:
         parsed = parse_message(message)
 
-        print()
-        print("========== GEMINI ==========")
-        print(parsed)
-        print("============================")
+    except Exception as e:
+        print(f"Gemini Error: {e}")
+        return
 
-        await update.message.reply_text("📈 Price inquiry detected.")
+    print()
+    print("========== GEMINI ==========")
+    print(parsed)
+    print("============================")
 
-    else:
-        print("Ignored.")
+    # ----------------------------
+    # Create Inquiry Ticket
+    # ----------------------------
+
+    ticket = create_inquiry(
+        customer_name=user,
+        customer_group=group,
+        parsed_trade=parsed,
+    )
+
+    print()
+    print("========== INQUIRY ==========")
+    print(ticket)
+    print("=============================")
+
+    # ----------------------------
+    # Send Telegram Inquiry Card
+    # ----------------------------
+
+    await update.message.reply_text(
+        build_inquiry_card(ticket),
+        parse_mode="HTML",
+        reply_markup=inquiry_keyboard(ticket.id),
+    )
 
 
 def run_bot():
