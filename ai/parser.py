@@ -12,7 +12,7 @@ from pydantic import BaseModel, Field
 from config import GEMINI_API_KEY
 
 
-client = genai.Client(api_key=GEMINI_API_KEY)
+client = None
 
 
 # =====================================================
@@ -71,6 +71,9 @@ SYSTEM_PROMPT = """
 You are an OTC cryptocurrency trading assistant.
 
 Your ONLY job is to extract structured trading information.
+
+Short vague messages like "rate now?", "rate please?", "rates?", "price?", and "quote please"
+are price inquiries even when asset, fiat, action, and amount are not specified.
 
 Never explain.
 
@@ -189,6 +192,10 @@ Return ONLY valid JSON.
 # =====================================================
 
 def parse_message(message: str) -> ParsedTrade:
+    global client
+
+    if client is None:
+        client = genai.Client(api_key=GEMINI_API_KEY)
 
     response = client.models.generate_content(
 

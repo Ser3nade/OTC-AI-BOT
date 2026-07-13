@@ -4,190 +4,320 @@ from inquiry.model import Inquiry, InquiryStatus
 from pricing.engine import get_sheet_rate
 
 
+UNSPECIFIED = "Unspecified"
+
+STATUS_LABELS = {
+    InquiryStatus.NEW: "🟢 NEW",
+    InquiryStatus.QUOTE_SENT: "📨 QUOTE SENT",
+    InquiryStatus.LOCK_PREVIEW: "👀 LOCK PREVIEW",
+    InquiryStatus.LOCKED: "🔒 LOCKED",
+    InquiryStatus.COMPLETED: "✅ COMPLETE",
+    InquiryStatus.CANCELLED: "❌ NO DEAL",
+}
+
+
+def _clean(value):
+    text = str(value or "").strip()
+
+    if not text or text.upper() == "UNKNOWN":
+        return UNSPECIFIED
+
+    return text
+
+
 def _format_amount(amount):
-
     if amount is None:
-        return "Not specified"
+        return UNSPECIFIED
 
-    return f"{amount:g}"
+    return f"{amount:,.2f}"
 
 
 def _format_rate(rate):
-
     if rate is None:
-        return "N/A"
+        return UNSPECIFIED
 
-    return f"{rate:g}"
+    return f"{rate:.4f}"
+
+
+def _is_specified(value):
+    return _clean(value) != UNSPECIFIED
 
 
 def _safe_get_rate(asset: str, fiat: str, action: str):
-
     try:
         return get_sheet_rate(
             asset=asset,
             fiat=fiat,
             action=action,
+        ), None
+    except Exception as exc:
+        return None, str(exc)
+
+
+SUPPORTED_RATE_PAIRS = [
+    ("USDT", "PHP"),
+    ("USDC", "PHP"),
+    ("USDT", "USD"),
+    ("USDC", "USD"),
+]
+
+
+def _pair(inquiry: Inquiry):
+    pair = str(inquiry.trade.currency_pair or "").strip().upper()
+
+    if pair and pair != "UNKNOWN":
+        return pair
+
+    asset = str(inquiry.trade.asset or "").strip().upper()
+    fiat = str(inquiry.trade.fiat or "").strip().upper()
+
+    if asset and fiat and asset != "UNKNOWN" and fiat != "UNKNOWN":
+        return f"{asset}/{fiat}"
+
+    return UNSPECIFIED
+
+
+def _asset(inquiry: Inquiry):
+    return _clean(inquiry.trade.asset).upper()
+
+
+def _fiat(inquiry: Inquiry):
+    return _clean(inquiry.trade.fiat).upper()
+
+
+def _sheet_preview_pairs(inquiry: Inquiry):
+    asset = str(inquiry.trade.asset or "").strip().upper()
+    fiat = str(inquiry.trade.fiat or "").strip().upper()
+
+    if (asset, fiat) in SUPPORTED_RATE_PAIRS:
+        return [(asset, fiat)]
+
+    if asset in {"USDT", "USDC"}:
+        return [
+            (pair_asset, pair_fiat)
+            for pair_asset, pair_fiat in SUPPORTED_RATE_PAIRS
+            if pair_asset == asset
+        ]
+
+    if fiat in {"PHP", "USD"}:
+        return [
+            (pair_asset, pair_fiat)
+            for pair_asset, pair_fiat in SUPPORTED_RATE_PAIRS
+            if pair_fiat == fiat
+        ]
+
+    return SUPPORTED_RATE_PAIRS
+
+
+def _build_sheet_rate_preview(inquiry: Inquiry):
+    lines = []
+    errors = []
+
+    for asset, fiat in _sheet_preview_pairs(inquiry):
+        buy, buy_error = _safe_get_rate(asset, fiat, "buy")
+        sell, sell_error = _safe_get_rate(asset, fiat, "sell")
+
+        lines.append(
+            f"{asset}/{fiat}: B {_format_rate(buy)} / S {_format_rate(sell)}"
         )
 
-    except Exception:
+        if buy_error:
+            errors.append(buy_error)
+        if sell_error:
+            errors.append(sell_error)
+
+    if not lines:
         return None
 
+    preview = "Sheet:\n" + "\n".join(lines)
 
-def _build_all_rates_message():
+    if errors and all("Unspecified" in line for line in lines):
+        preview += "\nSheet error: use /rates"
 
-    usdt_buy = _safe_get_rate("USDT", "PHP", "buy")
-    usdt_sell = _safe_get_rate("USDT", "PHP", "sell")
-
-    usdc_buy = _safe_get_rate("USDC", "PHP", "buy")
-    usdc_sell = _safe_get_rate("USDC", "PHP", "sell")
-
-    return f"""USDT/PHP
-Buying: {_format_rate(usdt_buy)} PHP/USDT
-Selling: {_format_rate(usdt_sell)} PHP/USDT
-
-USDC/PHP
-Buying: {_format_rate(usdc_buy)} PHP/USDC
-Selling: {_format_rate(usdc_sell)} PHP/USDC
-
-Let us know if interested."""
+    return preview
 
 
-def _build_specific_quote_message(inquiry: Inquiry):
-
+def build_quote_message(inquiry: Inquiry):
     asset = str(inquiry.trade.asset).strip().upper()
     fiat = str(inquiry.trade.fiat).strip().upper()
     action = str(inquiry.trade.action).strip().lower()
-    pair = str(inquiry.trade.currency_pair).strip().upper()
+    pair = _pair(inquiry)
     amount = inquiry.trade.amount
     rate = inquiry.trade.quoted_rate
 
-    if not pair or pair == "UNKNOWN":
-        pair = f"{asset}/{fiat}"
+    has_specific_quote = (
+        asset in {"USDT", "USDC"}
+        and fiat in {"PHP", "USD"}
+        and action in {"buy", "sell"}
+        and rate is not None
+    )
 
-    if action == "buy":
-        action_label = "Buying"
+    if not has_specific_quote:
+        return build_all_rates_message()
 
-    elif action == "sell":
-        action_label = "Selling"
-
-    else:
-        return _build_all_rates_message()
+    action_label = "Buying" if action == "buy" else "Selling"
 
     message = f"""{pair}
-{action_label}: {_format_rate(rate)} {fiat}/{asset}"""
+{action_label}: {_format_rate(rate)} {_clean(fiat)}/{_clean(asset)}"""
 
     if amount is not None and rate is not None:
-
-        total = amount * rate
+        total = inquiry.trade.fiat_amount
+        if total is None:
+            total = amount * rate
 
         message += f"""
+For {_format_amount(amount)} {_clean(asset)}, estimated total is {_format_amount(total)} {_clean(fiat)}."""
 
-For {_format_amount(amount)} {asset}, estimated total is {total:,.2f} {fiat}."""
+    message += "\nLet us know if interested."
+    return message
 
-    message += """
 
-Let us know if interested."""
+def build_all_rates_message():
+    pairs = [
+        ("USDT", "PHP"),
+        ("USDC", "PHP"),
+        ("USDT", "USD"),
+        ("USDC", "USD"),
+    ]
+
+    sections = []
+    errors = []
+
+    for asset, fiat in pairs:
+        buy, buy_error = _safe_get_rate(asset, fiat, "buy")
+        sell, sell_error = _safe_get_rate(asset, fiat, "sell")
+
+        sections.append(
+            f"""{asset}/{fiat}
+Buying {_format_rate(buy)} / Selling {_format_rate(sell)}"""
+        )
+
+        if buy_error:
+            errors.append(buy_error)
+        if sell_error:
+            errors.append(sell_error)
+
+    message = "\n\n".join(sections)
 
     return message
 
 
-def _build_quote_message(inquiry: Inquiry):
+def build_rates_debug_message():
+    message = build_all_rates_message()
+    errors = []
 
-    asset = str(inquiry.trade.asset).strip().upper()
-    fiat = str(inquiry.trade.fiat).strip().upper()
+    for asset, fiat in [
+        ("USDT", "PHP"),
+        ("USDC", "PHP"),
+        ("USDT", "USD"),
+        ("USDC", "USD"),
+    ]:
+        _, buy_error = _safe_get_rate(asset, fiat, "buy")
+        _, sell_error = _safe_get_rate(asset, fiat, "sell")
+
+        if buy_error:
+            errors.append(f"{asset}/{fiat} buy: {buy_error}")
+        if sell_error:
+            errors.append(f"{asset}/{fiat} sell: {sell_error}")
+
+    if errors:
+        message += "\n\nErrors:\n" + "\n".join(errors[:4])
+
+    return message
+
+
+def build_lock_confirmation(inquiry: Inquiry):
+    sequence = inquiry.lock_sequence or 1
+    rate = _format_rate(inquiry.trade.quoted_rate)
+    pair = _pair(inquiry)
     action = str(inquiry.trade.action).strip().lower()
+    direction = "bought" if action == "buy" else "sold"
+    asset = _asset(inquiry)
+    fiat = _fiat(inquiry)
+    amount = _format_amount(inquiry.trade.amount)
+    fiat_amount = _format_amount(inquiry.trade.fiat_amount)
 
-    is_specific = (
-        asset in ["USDT", "USDC"]
-        and fiat in ["PHP", "USD"]
-        and action in ["buy", "sell"]
-        and inquiry.trade.quoted_rate is not None
+    return (
+        f"{sequence}.\n\n"
+        f"Rate is {rate} {pair}. You {direction} a total of "
+        f"{amount} {asset} for {fiat_amount} {fiat}"
     )
 
-    if is_specific:
-        return _build_specific_quote_message(inquiry)
 
-    return _build_all_rates_message()
+def _direction(inquiry: Inquiry):
+    action = _clean(inquiry.trade.action)
+
+    if action != UNSPECIFIED:
+        return action.upper()
+
+    return UNSPECIFIED
 
 
-def _build_cancelled_card(inquiry: Inquiry):
+def _build_trade_form(inquiry: Inquiry):
+    lines = []
 
-    claimed_by = (
-        inquiry.ownership.claimed_by_name
-        if inquiry.ownership.claimed_by_name
-        else "Nobody"
-    )
+    if _pair(inquiry) != UNSPECIFIED:
+        lines.append(f"Pair: {_pair(inquiry)}")
 
-    return f"""
-❌ <b>NO DEAL</b>
+    if inquiry.trade.amount is not None:
+        lines.append(f"Amount: {_format_amount(inquiry.trade.amount)}")
 
-🆔 <code>{escape(inquiry.inquiry_id)}</code>
-👤 <b>Client</b>: {escape(inquiry.customer.telegram_name)}
-💵 <b>Pair</b>: {escape(inquiry.trade.currency_pair)}
-🙋 <b>Claimed By</b>: {escape(claimed_by)}
-"""
+    if _is_specified(inquiry.trade.asset):
+        lines.append(f"Stablecoin: {_asset(inquiry)}")
+
+    if inquiry.trade.fiat_amount is not None:
+        lines.append(f"Fiat amount: {_format_amount(inquiry.trade.fiat_amount)}")
+
+    if _is_specified(inquiry.trade.fiat):
+        lines.append(f"Fiat: {_fiat(inquiry)}")
+
+    if inquiry.trade.quoted_rate is not None:
+        lines.append(f"Rate: {_format_rate(inquiry.trade.quoted_rate)}")
+
+    if _direction(inquiry) != UNSPECIFIED:
+        lines.append(f"Direction: {_direction(inquiry)}")
+
+    if not lines:
+        lines.append("Details: rate inquiry")
+
+    return "\n".join(lines)
 
 
 def build_inquiry_card(inquiry: Inquiry) -> str:
+    source_group = inquiry.telegram.group_name or "Private Chat"
+    status_label = STATUS_LABELS.get(inquiry.status, inquiry.status.value)
+
+    if inquiry.status == InquiryStatus.COMPLETED:
+        return (
+            f"<b>{escape(inquiry.inquiry_id)}</b> {escape(status_label)} | "
+            f"From: {escape(source_group)} | "
+            f"{escape(_direction(inquiry))} {escape(_format_amount(inquiry.trade.amount))} "
+            f"{escape(_pair(inquiry))} @ {escape(_format_rate(inquiry.trade.quoted_rate))}"
+        )
 
     if inquiry.status == InquiryStatus.CANCELLED:
-        return _build_cancelled_card(inquiry)
+        reason = inquiry.cancel_reason or "No reason provided"
+        return (
+            f"<b>{escape(inquiry.inquiry_id)}</b> {escape(status_label)} | "
+            f"From: {escape(source_group)} | "
+            f"{escape(_pair(inquiry))} | {escape(reason)}"
+        )
 
-    amount = _format_amount(inquiry.trade.amount)
+    lines = [
+        f"<b>{escape(inquiry.inquiry_id)}</b> | {escape(status_label)}",
+        f"From: {escape(source_group)}",
+        f"Client: {escape(inquiry.customer.telegram_name)}",
+        escape(_build_trade_form(inquiry)),
+    ]
 
-    status_icon = {
-        InquiryStatus.NEW: "🟢",
-        InquiryStatus.CLAIMED: "🟡",
-        InquiryStatus.QUOTE_READY: "🟣",
-        InquiryStatus.QUOTE_SENT: "🔵",
-        InquiryStatus.LOCKED: "🔒",
-        InquiryStatus.LOGGED: "📝",
-        InquiryStatus.COMPLETED: "✅",
-        InquiryStatus.CANCELLED: "❌",
-    }.get(inquiry.status, "⚪")
+    sheet_preview = _build_sheet_rate_preview(inquiry)
+    if sheet_preview:
+        lines.append(escape(sheet_preview))
 
-    claimed_by = (
-        inquiry.ownership.claimed_by_name
-        if inquiry.ownership.claimed_by_name
-        else "Nobody"
-    )
+    if inquiry.status == InquiryStatus.LOCK_PREVIEW:
+        lines.append(f"Lock Preview: <code>{escape(build_lock_confirmation(inquiry))}</code>")
 
-    quote_preview = ""
+    if inquiry.status == InquiryStatus.LOCKED:
+        lines.append(f"Locked: <code>{escape(build_lock_confirmation(inquiry))}</code>")
 
-    if inquiry.status in [
-        InquiryStatus.CLAIMED,
-        InquiryStatus.QUOTE_READY,
-        InquiryStatus.QUOTE_SENT,
-    ]:
-
-        quote_message = _build_quote_message(inquiry)
-
-        quote_preview = f"""
-
-📨 <b>Message Preview</b>
-<pre>{escape(quote_message)}</pre>
-"""
-
-    return f"""
-{status_icon} <b>OTC INQUIRY</b>
-
-👤 <b>Client</b>
-{escape(inquiry.customer.telegram_name)}
-
-💱 <b>Trade</b>
-{escape(inquiry.trade.action.upper())} {escape(amount)} {escape(inquiry.trade.asset)}
-
-💵 <b>Pair</b>
-{escape(inquiry.trade.currency_pair)}
-
-📌 <b>Status</b>
-{escape(inquiry.status.value)}
-
-🙋 <b>Claimed By</b>
-{escape(claimed_by)}
-
-🎯 <b>Confidence</b>
-{inquiry.confidence:.0%}
-{quote_preview}
-🆔 <code>{escape(inquiry.inquiry_id)}</code>
-"""
+    return "\n".join(lines)

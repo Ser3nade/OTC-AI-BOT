@@ -13,6 +13,7 @@ class InquiryStatus(Enum):
     CLAIMED = "CLAIMED"
     QUOTE_READY = "QUOTE_READY"
     QUOTE_SENT = "QUOTE_SENT"
+    LOCK_PREVIEW = "LOCK_PREVIEW"
     LOCKED = "LOCKED"
     LOGGED = "LOGGED"
     COMPLETED = "COMPLETED"
@@ -32,6 +33,14 @@ class TelegramInfo:
 
     group_name: str
 
+    source_message_id: Optional[int] = None
+
+    card_message_id: Optional[int] = None
+
+    card_chat_id: Optional[int] = None
+
+    chat_username: Optional[str] = None
+
 
 # =====================================================
 # CUSTOMER
@@ -41,6 +50,8 @@ class TelegramInfo:
 class CustomerInfo:
 
     telegram_name: str
+
+    telegram_id: Optional[int] = None
 
     resolved_name: Optional[str] = None
 
@@ -65,6 +76,8 @@ class TradeInfo:
     quoted_rate: Optional[float] = None
 
     mentioned_rate: Optional[float] = None
+
+    fiat_amount: Optional[float] = None
 
 
 # =====================================================
@@ -103,6 +116,22 @@ class Inquiry:
     original_message: str = ""
 
     confidence: float = 0.0
+
+    cancel_reason: Optional[str] = None
+
+    quote_sent_at: Optional[datetime] = None
+
+    locked_at: Optional[datetime] = None
+
+    lock_sequence: Optional[int] = None
+
+    trade_logged_at: Optional[datetime] = None
+
+    trade_log_worksheet: Optional[str] = None
+
+    trade_log_row: Optional[int] = None
+
+    completed_at: Optional[datetime] = None
 
     created_at: datetime = field(default_factory=datetime.utcnow)
 

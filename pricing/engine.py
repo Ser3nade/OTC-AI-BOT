@@ -1,16 +1,30 @@
-import os
 import re
+import time
 from typing import Optional
 
-import gspread
-from dotenv import load_dotenv
-
-
-load_dotenv()
+from config import (
+    GOOGLE_SERVICE_ACCOUNT_FILE,
+    PRICE_SHEET_ID,
+    PRICE_WORKSHEET_NAME,
+)
 
 
 class PriceLookupError(Exception):
     pass
+
+
+PRICE_CACHE_TTL_SECONDS = 30
+_price_records_cache = {
+    "expires_at": 0.0,
+    "records": None,
+    "error": None,
+}
+
+
+def clear_price_cache():
+    _price_records_cache["expires_at"] = 0.0
+    _price_records_cache["records"] = None
+    _price_records_cache["error"] = None
 
 
 def _normalize_key(value: str) -> str:
@@ -54,10 +68,12 @@ def _parse_rate(value) -> Optional[float]:
 
 
 def _get_worksheet():
+    import gspread
+    from gspread.exceptions import WorksheetNotFound
 
-    service_account_file = os.getenv("GOOGLE_SERVICE_ACCOUNT_FILE")
-    sheet_id = os.getenv("PRICE_SHEET_ID")
-    worksheet_name = os.getenv("PRICE_WORKSHEET_NAME", "Prices")
+    service_account_file = GOOGLE_SERVICE_ACCOUNT_FILE
+    sheet_id = str(PRICE_SHEET_ID or "").strip()
+    worksheet_name = str(PRICE_WORKSHEET_NAME or "Prices").strip()
 
     if not service_account_file:
         raise PriceLookupError("GOOGLE_SERVICE_ACCOUNT_FILE is missing in .env")
@@ -69,7 +85,26 @@ def _get_worksheet():
 
     spreadsheet = gc.open_by_key(sheet_id)
 
-    return spreadsheet.worksheet(worksheet_name)
+    try:
+        return spreadsheet.worksheet(worksheet_name)
+    except WorksheetNotFound:
+        worksheets = spreadsheet.worksheets()
+        available_titles = [worksheet.title for worksheet in worksheets]
+
+        for worksheet in worksheets:
+            if worksheet.title.strip().lower() == worksheet_name.lower():
+                return worksheet
+
+        if worksheets:
+            return worksheets[0]
+
+        raise PriceLookupError(
+            f"Worksheet '{worksheet_name}' not found. Available tabs: {available_titles}"
+        )
+    except Exception as exc:
+        raise PriceLookupError(
+            f"Could not open worksheet '{worksheet_name}': {type(exc).__name__}: {exc}"
+        ) from exc
 
 
 def _get_records_from_worksheet(worksheet):
@@ -135,6 +170,39 @@ def _get_records_from_worksheet(worksheet):
     return records
 
 
+def _get_price_records(force_refresh=False):
+    now = time.monotonic()
+
+    if not force_refresh and _price_records_cache["expires_at"] > now:
+        cached_error = _price_records_cache["error"]
+
+        if cached_error is not None:
+            raise cached_error
+
+        return _price_records_cache["records"]
+
+    try:
+        worksheet = _get_worksheet()
+        records = _get_records_from_worksheet(worksheet)
+    except PriceLookupError as exc:
+        _price_records_cache["expires_at"] = now + PRICE_CACHE_TTL_SECONDS
+        _price_records_cache["records"] = None
+        _price_records_cache["error"] = exc
+        raise
+    except Exception as exc:
+        error = PriceLookupError(str(exc))
+        _price_records_cache["expires_at"] = now + PRICE_CACHE_TTL_SECONDS
+        _price_records_cache["records"] = None
+        _price_records_cache["error"] = error
+        raise error from exc
+
+    _price_records_cache["expires_at"] = now + PRICE_CACHE_TTL_SECONDS
+    _price_records_cache["records"] = records
+    _price_records_cache["error"] = None
+
+    return records
+
+
 def _normalize_row(row: dict) -> dict:
 
     normalized = {}
@@ -172,6 +240,15 @@ def _row_matches(row: dict, asset: str, fiat: str) -> bool:
         or row.get("stablecoin")
     )
 
+    if row_asset:
+        normalized_asset = _normalize_pair(row_asset)
+
+        if normalized_asset in {
+            expected_pair_slash,
+            expected_pair_plain,
+        }:
+            return True
+
     row_fiat = (
         row.get("fiat")
         or row.get("currency")
@@ -195,10 +272,14 @@ def _get_rate_from_row(row: dict, action: str) -> float:
         candidate_columns = [
             "client_buy_rate",
             "buy_rate",
+            "buying",
+            "buying_rate",
             "ask",
             "ask_rate",
             "sell",
             "sell_rate",
+            "selling",
+            "selling_rate",
             "offer",
             "offer_rate",
         ]
@@ -207,10 +288,14 @@ def _get_rate_from_row(row: dict, action: str) -> float:
         candidate_columns = [
             "client_sell_rate",
             "sell_rate",
+            "selling",
+            "selling_rate",
             "bid",
             "bid_rate",
             "buy",
             "buy_rate",
+            "buying",
+            "buying_rate",
         ]
 
     else:
@@ -231,15 +316,16 @@ def _get_rate_from_row(row: dict, action: str) -> float:
     )
 
 
-def get_sheet_rate(asset: str, fiat: str, action: str) -> float:
+def get_sheet_rate(asset: str, fiat: str, action: str, force_refresh=False) -> float:
+
+    if not asset or not fiat or not action:
+        raise PriceLookupError("Asset, fiat, and action are required")
 
     asset = asset.strip().upper()
     fiat = fiat.strip().upper()
     action = action.strip().lower()
 
-    worksheet = _get_worksheet()
-
-    records = _get_records_from_worksheet(worksheet)
+    records = _get_price_records(force_refresh=force_refresh)
 
     for raw_row in records:
 
